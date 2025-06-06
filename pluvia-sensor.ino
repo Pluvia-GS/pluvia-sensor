@@ -196,7 +196,7 @@ int leituraDaAgua() {
   return distancia;
 }
 
-//====================== MODO DE LEITURA (tela de sensores) ======================
+//====================== MODO DE LEITURA (tela de sensores) - CORRIGIDO ======================
 void modoLeitura() {
   unsigned long timerPrint = millis();
   unsigned long timerDisplay = millis();
@@ -280,9 +280,8 @@ void modoLeitura() {
         picoNivel = nivelAgua;
         Serial.println(">> Evento iniciado!");
 
-        // converte Unix time para época do RTClib (2000) subtraindo offset
-        uint32_t epoch2000 = timestampInicio - EPOCH_OFFSET;
-        DateTime dtIni(epoch2000);
+        // Mostra a data corretamente
+        DateTime dtIni = rtc.now();
         Serial.print("Início: ");
         Serial.print(dtIni.year());   Serial.print("-");
         Serial.print(dtIni.month());  Serial.print("-");
@@ -302,11 +301,9 @@ void modoLeitura() {
         uint32_t timestampFim = agoraUnix;
         Serial.println(">> Evento finalizado!");
 
-        // converte timestamps pra data/hora legível
-        uint32_t ini2000 = timestampInicio - EPOCH_OFFSET;
-        uint32_t fim2000 = timestampFim - EPOCH_OFFSET;
-        DateTime dtInicio(ini2000);
-        DateTime dtFim(fim2000);
+        // Usa DateTime diretamente do RTC
+        DateTime dtInicio = DateTime(timestampInicio);
+        DateTime dtFim = rtc.now();
 
         Serial.print("Início: ");
         Serial.print(dtInicio.year());   Serial.print("-");
@@ -334,9 +331,16 @@ void modoLeitura() {
           enderecoEEPROM += 4;
           EEPROM.put(enderecoEEPROM, timestampFim);
           enderecoEEPROM += 4;
-          EEPROM.put(enderecoEEPROM, picoNivel);
+          uint16_t picouint = (uint16_t)picoNivel;
+          EEPROM.put(enderecoEEPROM, picouint);
           enderecoEEPROM += 2;
+          
+          // IMPORTANTE: Salva o novo endereço na EEPROM!
+          EEPROM.put(1010, enderecoEEPROM);
+          
           Serial.println(">> FLAG gravada na EEPROM");
+          Serial.print("Próximo endereço: ");
+          Serial.println(enderecoEEPROM);
         } else {
           Serial.println("!!! EEPROM cheia");
         }
@@ -347,7 +351,7 @@ void modoLeitura() {
   }
 }
 
-//====================== DEBUG EEPROM (via Serial) ======================
+//====================== DEBUG EEPROM (via Serial) - CORRIGIDO ======================
 void debugEEPROM() {
   Serial.println("===== DEBUG EEPROM =====");
   uint16_t val16;
@@ -367,24 +371,61 @@ void debugEEPROM() {
   EEPROM.get(CFG_COOLDOWN_ADDR, val16);
   Serial.print("Cooldown (min): "); Serial.println(val16);
 
-  EEPROM.get(1010, val16);
-  Serial.print("End EEPROM flags: "); Serial.println(val16);
+  // Lê o endereço atual da EEPROM ANTES de usar
+  int enderecoSalvo;
+  EEPROM.get(1010, enderecoSalvo);
+  Serial.print("End EEPROM flags: "); Serial.println(enderecoSalvo);
 
   Serial.println("\n===== FLAGS SALVAS =====");
   int endereco = ENDERECO_INICIAL_FLAGS;
   int count = 0;
 
-  while (endereco + 10 <= 1000) {
+  // Usa o endereço salvo, não a variável global
+  if (enderecoSalvo <= ENDERECO_INICIAL_FLAGS || enderecoSalvo > 1000) {
+    Serial.println("Nenhuma flag registrada.");
+    return;
+  }
+
+  // Lê apenas até o endereço salvo
+  while (endereco < enderecoSalvo && endereco + 10 <= 1000) {
     uint32_t tIni, tFim;
     uint16_t pico;
 
-    EEPROM.get(endereco, tIni); endereco += 4;
-    EEPROM.get(endereco, tFim);  endereco += 4;
-    EEPROM.get(endereco, pico);  endereco += 2;
+    EEPROM.get(endereco, tIni);
+    
+    // Verifica se é um timestamp válido
+    if (tIni == 0xFFFFFFFF || tIni == 0) {
+      break;
+    }
+    
+    endereco += 4;
+    EEPROM.get(endereco, tFim);
+    
+    // Verifica se o timestamp de fim é válido
+    if (tFim == 0xFFFFFFFF || tFim == 0 || tFim < tIni) {
+      break;
+    }
+    
+    endereco += 4;
+    EEPROM.get(endereco, pico);
+    
+    // Verifica se o pico é válido (0-500 cm)
+    if (pico == 0xFFFF || pico > 500) {
+      break;
+    }
+    
+    endereco += 2;
 
-    // converte cada timestamp pro RTClib, subtraindo EPOCH_OFFSET
-    DateTime dIni(tIni - EPOCH_OFFSET);
-    if (dIni.year() < 2000) break;
+    // Usa DateTime diretamente com timestamp Unix
+    DateTime dIni(tIni);
+    DateTime dFim(tFim);
+    
+    // Verifica se as datas são razoáveis
+    if (dIni.year() < 2000 || dIni.year() > 2100 || 
+        dFim.year() < 2000 || dFim.year() > 2100) {
+      Serial.println("Data inválida detectada");
+      continue;
+    }
 
     Serial.print("[FLAG "); Serial.print(++count); Serial.println("]");
     Serial.print("Início: ");
@@ -395,7 +436,6 @@ void debugEEPROM() {
     Serial.print(dIni.minute()); Serial.print(":");
     Serial.println(dIni.second());
 
-    DateTime dFim(tFim - EPOCH_OFFSET);
     Serial.print("Fim: ");
     Serial.print(dFim.year()); Serial.print("-");
     Serial.print(dFim.month()); Serial.print("-");
@@ -409,17 +449,28 @@ void debugEEPROM() {
     Serial.println("---------------------");
   }
 
-  if (count == 0) Serial.println("Nenhuma flag registrada.");
+  if (count == 0) {
+    Serial.println("Nenhuma flag válida encontrada.");
+  } else {
+    Serial.print("Total de flags: ");
+    Serial.println(count);
+  }
 }
 
-//====================== LIMPA FLAGS DE EVENTO ======================
+//====================== LIMPA FLAGS DE EVENTO - CORRIGIDO ======================
 void limparEEPROMFlags() {
+  // Limpa apenas a área de flags
   for (int i = ENDERECO_INICIAL_FLAGS; i <= 1000; i++) {
-    EEPROM.update(i, 0xFF);  // marca como apagado
+    EEPROM.update(i, 0xFF);
   }
+  
+  // Reseta o ponteiro para o início
   enderecoEEPROM = ENDERECO_INICIAL_FLAGS;
   EEPROM.put(1010, enderecoEEPROM);
+  
   Serial.println("EEPROM de flags limpa.");
+  Serial.print("Próximo endereço de escrita: ");
+  Serial.println(enderecoEEPROM);
 }
 
 //====================== INICIALIZAÇÃO DO HARDWARE ======================
@@ -435,14 +486,34 @@ void begins() {
   }
 }
 
+//====================== SETUP CORRIGIDO ======================
 void setup() {
   Serial.begin(9600);
+  
+  // Primeiro carrega as variáveis
   definevars();
+  
+  // Depois faz o primeiro setup se necessário
   primeirosetup();
+  
+  // Carrega o endereço atual da EEPROM
+  EEPROM.get(1010, enderecoEEPROM);
+  
+  // Valida o endereço carregado
+  if (enderecoEEPROM < ENDERECO_INICIAL_FLAGS || enderecoEEPROM > 1000) {
+    enderecoEEPROM = ENDERECO_INICIAL_FLAGS;
+    EEPROM.put(1010, enderecoEEPROM);
+  }
+  
+  // Continua com o resto da inicialização
   begins();
   pinMode(CHUVA, INPUT_PULLUP);
   pinMode(4, OUTPUT);
   pinMode(3, INPUT);
+  
+  // Debug: mostra o endereço carregado
+  Serial.print("Endereço EEPROM carregado: ");
+  Serial.println(enderecoEEPROM);
 }
 
 //====================== MENU PRINCIPAL COM NAVEGAÇÃO A/B ======================
