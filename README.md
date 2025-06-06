@@ -7,7 +7,7 @@
 
 Para visualizar o funcionamento do sistema em tempo real, acesse o projeto simulado no Wokwi:
 
-[Acessar Simulação no Wokwi](https://wokwi.com/projects/432776839423735809)
+[Acessar Simulação no Wokwi](https://wokwi.com/projects/432975816768110593)
 
 O ambiente virtual permite testar sensores, interações no LCD, comportamento do sistema sob chuva e visualizar os registros de eventos diretamente via terminal serial.
 
